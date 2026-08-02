@@ -26,8 +26,13 @@ function parseCookies(cookieStr: string, domain: string): Array<{name: string; v
   }).filter(Boolean) as Array<{name: string; value: string; domain: string; path: string}>;
 }
 
+// Force dynamic ESM import (TypeScript compile to CJS breaks normal import())
+async function dynamicImport(specifier: string) {
+  return new Function('specifier', 'return import(specifier)')(specifier) as Promise<any>;
+}
+
 async function launchBrowser() {
-  const puppeteer = await import('puppeteer-core');
+  const puppeteer = await dynamicImport('puppeteer-core');
 
   let executablePath: string;
   let args: string[];
@@ -36,7 +41,7 @@ async function launchBrowser() {
     executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
     args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
   } else {
-    const chromium = await import('@sparticuz/chromium');
+    const chromium = await dynamicImport('@sparticuz/chromium');
     executablePath = await chromium.default.executablePath();
     args = [...chromium.default.args, '--disable-blink-features=AutomationControlled'];
   }
