@@ -509,6 +509,11 @@ async function handleMessage(msg: TelegramBot.Message) {
       }
     } catch {}
 
+    // If it looks like a bare JWT (starts with eyJ), add jwt= prefix
+    if (cookie.startsWith('eyJ') && !cookie.includes('jwt=')) {
+      cookie = 'jwt=' + cookie;
+    }
+
     const region = pendingRegion.get(chatId) || 'ph';
     pendingRegion.delete(chatId);
     const validation = await validateCookie(cookie);
@@ -589,6 +594,11 @@ async function handleDocument(msg: TelegramBot.Message) {
         }
       } catch {
         cookie = text.trim();
+      }
+
+      // If bare JWT, add prefix
+      if (cookie.startsWith('eyJ') && !cookie.includes('jwt=')) {
+        cookie = 'jwt=' + cookie;
       }
 
       const region = pendingRegion.get(chatId) || 'ph';
