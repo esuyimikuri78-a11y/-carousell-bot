@@ -27,21 +27,23 @@ function parseCookies(cookieStr: string, domain: string): Array<{name: string; v
 }
 
 async function launchBrowser() {
-  const puppeteer = await import('puppeteer-extra');
-  const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default;
-  puppeteer.default.use(StealthPlugin());
+  const puppeteer = await import('puppeteer-core');
 
   let executablePath: string;
+  let args: string[];
+
   if (process.platform === 'darwin') {
     executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
   } else {
     const chromium = await import('@sparticuz/chromium');
     executablePath = await chromium.default.executablePath();
+    args = [...chromium.default.args, '--disable-blink-features=AutomationControlled'];
   }
 
   return puppeteer.default.launch({
     executablePath,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+    args,
     defaultViewport: { width: 1280, height: 900 },
     headless: 'new' as any,
   });
@@ -252,7 +254,7 @@ export function extractUserFromJwt(cookie: string): { userId?: string; username?
     const json = JSON.parse(decoded);
     return {
       userId: json.id || json.user_id || json.sub,
-      username: json.username || json.name || json.email,
+      username: json.user || json.username || json.name || json.email,
     };
   } catch (e: any) {
     return { error: `JWT parse error: ${e.message}` };
