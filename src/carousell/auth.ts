@@ -109,20 +109,20 @@ export async function fetchChatToken(cookie: string, region: string = 'ph'): Pro
   }
 }
 
-// Send message via Puppeteer with 90s timeout
+// Send message via Puppeteer with 120s timeout
 export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string, message: string, region: string = 'ph'): Promise<{success: boolean; error?: string}> {
   let browser: any;
   const timeout = setTimeout(() => {
     if (browser) try { browser.close(); } catch {}
-  }, 90000);
+  }, 120000);
 
   try {
     browser = await launchBrowser();
     const page = await setupPage(browser, cookie, region);
 
     // Navigate to listing
-    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await new Promise(r => setTimeout(r, 6000));
+    await page.goto(listingUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 5000));
 
     // Check for ban
     const pageContent = await page.evaluate(() => document.body?.innerText || '');
@@ -130,75 +130,49 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       return { success: false, error: 'ACCOUNT_BANNED' };
     }
 
-    // Scroll down to make sure button is visible
-    await page.evaluate(() => window.scrollBy(0, 300));
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Find and click Chat button — try multiple approaches
-    const chatClicked = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('button'));
-      
-      // 1. Exact text match
-      for (const b of btns) {
-        const text = b.textContent?.trim();
-        if (text === 'Chat' || text === 'Chat with seller' || text === '💬 Chat') {
-          (b as HTMLElement).click();
-          return true;
+    // Find Chat button
+    const chatBtn = await page.evaluate(() => {
+      let btn = document.querySelector('button.D_qP.D_qZ.D_buh.D_qW.D_qU');
+      if (!btn) {
+        const btns = Array.from(document.querySelectorAll('button'));
+        for (const b of btns) {
+          if (b.textContent?.trim() === 'Chat' || b.textContent?.trim() === 'Chat with seller') {
+            btn = b; break;
+          }
         }
       }
-      
-      // 2. Partial text match
-      for (const b of btns) {
-        const text = b.textContent?.trim().toLowerCase();
-        if (text && text.includes('chat')) {
-          (b as HTMLElement).click();
-          return true;
-        }
-      }
-      
-      // 3. Class-based selectors
-      const classBtn = document.querySelector('button[class*="D_qP"]') 
-        || document.querySelector('button[class*="chat" i]')
-        || document.querySelector('a[href*="chat" i]');
-      if (classBtn) {
-        (classBtn as HTMLElement).click();
-        return true;
-      }
-      
-      return false;
+      return !!btn;
     });
 
-    if (!chatClicked) {
-      // Debug: save screenshot
-      try {
-        const title = await page.title();
-        const url = page.url();
-        const allBtns = await page.evaluate(() => 
-          Array.from(document.querySelectorAll('button,a')).map(e => e.textContent?.trim().slice(0,30)).filter(Boolean)
-        );
-        return { success: false, error: `Chat button not found. Title: ${title}, URL: ${url}, Buttons: ${allBtns.join(', ')}` };
-      } catch {
-        return { success: false, error: 'Chat button not found' };
-      }
-    }
-    await new Promise(r => setTimeout(r, 5000));
-
-    // Find textarea
-    let textarea = null;
-    for (const sel of ['textarea.D_vb.D_ve.D_aOk', 'textarea[placeholder="Type here..."]', 'textarea.D_vb', 'textarea']) {
-      try {
-        textarea = await page.waitForSelector(sel, { timeout: 10000 });
-        if (textarea) break;
-      } catch {}
+    if (!chatBtn) {
+      return { success: false, error: 'Chat button not found' };
     }
 
-    if (!textarea) return { success: false, error: 'Chat input not found' };
+    // Click Chat and wait for navigation
+    const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+    await page.evaluate(() => {
+      const btn = document.querySelector('button.D_qP.D_qZ.D_buh.D_qW.D_qU') ||
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Chat');
+      if (btn) (btn as HTMLElement).click();
+    });
+    await navPromise;
+    await new Promise(r => setTimeout(r, 8000));
 
-    // Focus textarea
-    await textarea.click();
+    // Find textarea (try multiple times)
+    let input: any = null;
+    for (let i = 0; i < 10; i++) {
+      input = await page.$('textarea') || await page.$('[contenteditable="true"]');
+      if (input) break;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+
+    if (!input) return { success: false, error: 'Chat input not found' };
+
+    // Focus and type
+    await input.click();
     await new Promise(r => setTimeout(r, 500));
 
-    // Type multiline message — split by lines, type each + Shift+Enter
+    // Type multiline message
     const lines = message.split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) {
