@@ -184,13 +184,11 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       return { success: false, error: 'ACCOUNT_BANNED' };
     }
 
-    // Find Chat button — exact selector from user: <button class="D_rW D_sh D_bHw D_se D_sb"><div class="D_su">Chat</div></button>
+    // Find Chat button
     const chatBtnTexts = ['Chat', 'Chat with seller', 'View Chat', '💬 Chat'];
     const chatBtn = await page.evaluate((texts: string[]) => {
-      // Try exact class match first
       let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
       if (btn) return true;
-      // Try text match
       const btns = Array.from(document.querySelectorAll('button'));
       for (const b of btns) {
         const text = b.textContent?.trim();
@@ -203,12 +201,10 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       return { success: false, error: 'Chat button not found' };
     }
 
-    // Click Chat button
+    // Click Chat button and wait for navigation
     await page.evaluate((texts: string[]) => {
-      // Exact class match first
       let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
       if (!btn) {
-        // Text match fallback
         const btns = Array.from(document.querySelectorAll('button'));
         for (const b of btns) {
           const text = b.textContent?.trim();
@@ -218,15 +214,19 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       if (btn) (btn as HTMLElement).click();
     }, chatBtnTexts);
 
-    // Wait for page change (not full navigation, just DOM update)
-    await new Promise(r => setTimeout(r, 8000));
-    await new Promise(r => setTimeout(r, 8000));
+    // Wait for navigation to complete (Chat navigates to /inbox/)
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 5000));
 
-    // Find textarea (try multiple times)
+    // Find textarea on the new page (try multiple times)
     let input: any = null;
     for (let i = 0; i < 10; i++) {
-      input = await page.$('textarea') || await page.$('[contenteditable="true"]');
-      if (input) break;
+      try {
+        input = await page.$('textarea') || await page.$('[contenteditable="true"]');
+        if (input) break;
+      } catch {
+        // Frame might be detached, wait and retry
+      }
       await new Promise(r => setTimeout(r, 3000));
     }
 
