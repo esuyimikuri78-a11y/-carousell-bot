@@ -484,6 +484,7 @@ async function showSettingsMenu(chatId: number) {
 // ==================== ACTIONS ====================
 
 async function handleStartSending(chatId: number, query?: TelegramBot.CallbackQuery) {
+  clearNotify(chatId);
   const links = await storage.getLinks(chatId);
   const message = await storage.getMessage(chatId);
   const accounts = await storage.getAccounts(chatId);
@@ -772,10 +773,43 @@ async function handleDocument(msg: TelegramBot.Message) {
   }
 }
 
-// Notify — sends text AND refreshes menu
+// Notify — single message, accumulates updates
+const notifyMsgId = new Map<number, number>();
+const notifyLines = new Map<number, string[]>();
+
 export async function notify(chatId: number, text: string) {
-  try { await bot.sendMessage(chatId, text); } catch {}
+  const lines = notifyLines.get(chatId) || [];
+  lines.push(text);
+  // Keep last 20 lines
+  if (lines.length > 20) lines.shift();
+  notifyLines.set(chatId, lines);
+
+  const fullText = lines.join('\n');
+  const msgId = notifyMsgId.get(chatId);
+
+  try {
+    if (msgId) {
+      await bot.editMessageText(fullText, { chat_id: chatId, message_id: msgId });
+    } else {
+      const sent = await bot.sendMessage(chatId, fullText);
+      notifyMsgId.set(chatId, sent.message_id);
+    }
+  } catch {
+    // If edit fails, send new
+    try {
+      const sent = await bot.sendMessage(chatId, fullText);
+      notifyMsgId.set(chatId, sent.message_id);
+    } catch {}
+  }
+
+  // Refresh menu too
   try { await showMainMenu(chatId); } catch {}
+}
+
+// Clear notification log (call when starting fresh)
+export function clearNotify(chatId: number) {
+  notifyLines.delete(chatId);
+  notifyMsgId.delete(chatId);
 }
 
 // ==================== ADMIN: KEY MANAGEMENT ====================
