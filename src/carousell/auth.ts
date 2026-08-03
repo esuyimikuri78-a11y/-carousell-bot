@@ -37,26 +37,75 @@ async function launchBrowser() {
   let executablePath: string;
   let args: string[];
 
+  // Stealth args to bypass Cloudflare detection
+  const stealthArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-infobars',
+    '--window-size=1920,1080',
+    '--start-maximized',
+    '--disable-gpu',
+    '--disable-web-security',
+    '--allow-running-insecure-content',
+  ];
+
   if (process.platform === 'darwin') {
     executablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
+    args = stealthArgs;
   } else {
     const chromium = await dynamicImport('@sparticuz/chromium');
     executablePath = await chromium.default.executablePath();
-    args = [...chromium.default.args, '--disable-blink-features=AutomationControlled'];
+    args = [...chromium.default.args, ...stealthArgs.filter(a => !chromium.default.args.includes(a))];
   }
 
-  return puppeteer.default.launch({
+  const browser = await puppeteer.default.launch({
     executablePath,
     args,
-    defaultViewport: { width: 1280, height: 900 },
+    defaultViewport: { width: 1920, height: 1080 },
     headless: 'new' as any,
   });
+
+  return browser;
 }
 
 async function setupPage(browser: any, cookie: string, region: string = 'ph') {
   const page = await browser.newPage();
+
+  // Set realistic user agent
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+
+  // Stealth evasion scripts
+  await page.evaluateOnNewDocument(() => {
+    // Override webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    // Override languages
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    // Override plugins
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    // Override platform
+    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+    // Chrome runtime
+    (window as any).chrome = { runtime: {} };
+    // Permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters: any) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission } as PermissionStatus)
+        : originalQuery(parameters);
+  });
+
+  // Set extra headers
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+  });
+
   const r = REGIONS[region] || REGIONS.ph;
   const cookies = parseCookies(cookie, `www.${r.domain}`);
   if (cookies.length > 0) await page.setCookie(...cookies);
@@ -126,7 +175,7 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     const page = await setupPage(browser, cookie, region);
 
     // Navigate to listing
-    await page.goto(listingUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await new Promise(r => setTimeout(r, 5000));
 
     // Check for ban
@@ -135,32 +184,42 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       return { success: false, error: 'ACCOUNT_BANNED' };
     }
 
-    // Find Chat button
-    const chatBtn = await page.evaluate(() => {
-      let btn = document.querySelector('button.D_qP.D_qZ.D_buh.D_qW.D_qU');
-      if (!btn) {
-        const btns = Array.from(document.querySelectorAll('button'));
-        for (const b of btns) {
-          if (b.textContent?.trim() === 'Chat' || b.textContent?.trim() === 'Chat with seller') {
-            btn = b; break;
-          }
-        }
+    // Find Chat button — exact selector from user: <button class="D_rW D_sh D_bHw D_se D_sb"><div class="D_su">Chat</div></button>
+    const chatBtnTexts = ['Chat', 'Chat with seller', 'View Chat', '💬 Chat'];
+    const chatBtn = await page.evaluate((texts: string[]) => {
+      // Try exact class match first
+      let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
+      if (btn) return true;
+      // Try text match
+      const btns = Array.from(document.querySelectorAll('button'));
+      for (const b of btns) {
+        const text = b.textContent?.trim();
+        if (text && texts.includes(text)) return true;
       }
-      return !!btn;
-    });
+      return false;
+    }, chatBtnTexts);
 
     if (!chatBtn) {
       return { success: false, error: 'Chat button not found' };
     }
 
-    // Click Chat and wait for navigation
-    const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
-    await page.evaluate(() => {
-      const btn = document.querySelector('button.D_qP.D_qZ.D_buh.D_qW.D_qU') ||
-        Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Chat');
+    // Click Chat button
+    await page.evaluate((texts: string[]) => {
+      // Exact class match first
+      let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
+      if (!btn) {
+        // Text match fallback
+        const btns = Array.from(document.querySelectorAll('button'));
+        for (const b of btns) {
+          const text = b.textContent?.trim();
+          if (text && texts.includes(text)) { btn = b; break; }
+        }
+      }
       if (btn) (btn as HTMLElement).click();
-    });
-    await navPromise;
+    }, chatBtnTexts);
+
+    // Wait for page change (not full navigation, just DOM update)
+    await new Promise(r => setTimeout(r, 8000));
     await new Promise(r => setTimeout(r, 8000));
 
     // Find textarea (try multiple times)
