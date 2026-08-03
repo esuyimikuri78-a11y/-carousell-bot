@@ -24,7 +24,17 @@ export interface BotState {
   lastError: string;
   dayResetAt: number;
   uniquifier: boolean;
-  retryCount: Record<number, number>; // link index → retry count
+  retryCount: Record<number, number>;
+  // Warmer
+  warming: boolean;
+  warmInterval: number; // minutes between warm actions
+  warmNextAt: number;
+  warmStats: {
+    browsed: number;
+    liked: number;
+    profiles: number;
+    searched: number;
+  };
 }
 
 export interface SendResult {
@@ -58,4 +68,8 @@ export const DEFAULT_STATE: BotState = {
   dayResetAt: 0,
   uniquifier: true,
   retryCount: {},
+  warming: false,
+  warmInterval: 15,
+  warmNextAt: 0,
+  warmStats: { browsed: 0, liked: 0, profiles: 0, searched: 0 },
 };

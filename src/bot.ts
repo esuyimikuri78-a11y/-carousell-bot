@@ -119,10 +119,15 @@ async function showMainMenu(chatId: number) {
     ? (state.paused ? [{ text: '▶️ Продолжить', callback_data: 'action_resume' }] : [{ text: '⏸ Пауза', callback_data: 'action_pause' }])
     : [{ text: '▶️ Старт', callback_data: 'action_start' }];
 
+  const warmerBtn = state.warming
+    ? [{ text: '🔥 Прогрев: ВКЛ', callback_data: 'warmer_toggle' }]
+    : [{ text: '❄️ Прогрев: ВЫКЛ', callback_data: 'warmer_toggle' }];
+
   const rows: TelegramBot.InlineKeyboardButton[][] = [
     startBtn,
     [{ text: '👤 Аккаунты', callback_data: 'menu_accounts' }, { text: '🔗 Ссылки', callback_data: 'menu_links' }],
     [{ text: '💬 Сообщение', callback_data: 'menu_message' }, { text: '⚙️ Настройки', callback_data: 'menu_settings' }],
+    warmerBtn,
   ];
   if (state.running) rows.push([{ text: '⏹ Стоп', callback_data: 'action_stop' }]);
   rows.push([{ text: `🌍 Сменить регион`, callback_data: 'change_geo' }]);
@@ -152,6 +157,9 @@ async function handleCallback(query: TelegramBot.CallbackQuery) {
     return showMainMenu(chatId);
   }
   if (data === 'change_geo') return showGeoPicker(chatId);
+
+  // Warmer
+  if (data === 'warmer_toggle') return handleWarmerToggle(chatId);
 
   // Actions
   if (data === 'action_start') return handleStartSending(chatId, query);
@@ -473,6 +481,21 @@ async function handlePauseSending(chatId: number) {
 
 async function handleResumeSending(chatId: number) {
   await storage.setState(chatId, { paused: false, nextRunAt: Date.now() });
+  await showMainMenu(chatId);
+}
+
+// Warmer toggle
+async function handleWarmerToggle(chatId: number) {
+  const state = await storage.getState(chatId);
+  const { startWarmer, stopWarmer } = await import('./warmer');
+
+  if (state.warming) {
+    stopWarmer(chatId);
+    await storage.setState(chatId, { warming: false });
+  } else {
+    await storage.setState(chatId, { warming: true });
+    startWarmer(chatId, notify);
+  }
   await showMainMenu(chatId);
 }
 
