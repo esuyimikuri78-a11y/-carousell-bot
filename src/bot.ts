@@ -46,6 +46,9 @@ async function handleStart(msg: TelegramBot.Message) {
   await storage.addActiveChat(chatId);
   try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
 
+  // Clear errors on start
+  await storage.setState(chatId, { lastError: '' });
+
   const hasAccess = await storage.hasAccess(chatId);
   if (!hasAccess) {
     waitingFor.set(chatId, 'activate_key');
