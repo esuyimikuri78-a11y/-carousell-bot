@@ -163,6 +163,21 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     if (!sent && isAlive()) await page.keyboard.press('Enter');
 
     await new Promise(r => setTimeout(r, 3000));
+
+    // Verify: check if textarea is empty (message was sent)
+    if (isAlive()) {
+      try {
+        const textareaValue = await page.evaluate(() => {
+          const ta = document.querySelector('textarea');
+          return ta ? ta.value : null;
+        });
+        // If textarea still has text, message likely wasn't sent
+        if (textareaValue && textareaValue.trim().length > 0) {
+          return { success: false, error: 'Message not sent (textarea not empty)' };
+        }
+      } catch {}
+    }
+
     return { success: true };
   } catch (e: any) {
     return { success: false, error: `Browser error: ${e.message}` };

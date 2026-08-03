@@ -89,8 +89,8 @@ async function doTick(chatId: number, notify: NotifyFn): Promise<void> {
     return;
   }
 
-  // === PARALLEL SEND: all accounts at once ===
-  const tasks: Promise<{ accountIdx: number; linkIdx: number; success: boolean; error?: string }>[] = [];
+  // === SEQUENTIAL SEND: one at a time (shared browser can't do parallel pages reliably) ===
+  const results: { accountIdx: number; linkIdx: number; success: boolean; error?: string }[] = [];
 
   for (let i = 0; i < batchSize; i++) {
     const account = validAccounts[i % validAccounts.length];
@@ -102,20 +102,18 @@ async function doTick(chatId: number, notify: NotifyFn): Promise<void> {
       finalMessage = addVariation(messageTemplate, state.sentTotal + i);
     }
 
-    const task = (async () => {
-      try {
-        const result = await sendMessageViaPuppeteer(account.cookie!, link, finalMessage, account.region || 'ph');
-        return { accountIdx: i, linkIdx: i, success: result.success, error: result.error };
-      } catch (e: any) {
-        return { accountIdx: i, linkIdx: i, success: false, error: e.message };
-      }
-    })();
+    try {
+      const result = await sendMessageViaPuppeteer(account.cookie!, link, finalMessage, account.region || 'ph');
+      results.push({ accountIdx: i, linkIdx: i, success: result.success, error: result.error });
+    } catch (e: any) {
+      results.push({ accountIdx: i, linkIdx: i, success: false, error: e.message });
+    }
 
-    tasks.push(task);
+    // Small delay between sends to avoid conflicts
+    if (i < batchSize - 1) {
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
-
-  // Wait for all to complete
-  const results = await Promise.all(tasks);
 
   // Process results
   const retries = state.retryCount || {};
