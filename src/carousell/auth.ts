@@ -65,7 +65,7 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     page = await setupPage(browser, cookie, region);
 
     // Fast load - don't wait for all resources
-    await page.goto(listingUrl, { waitUntil: 'commit', timeout: 30000 });
+    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await new Promise(r => setTimeout(r, 2000));
 
     const pageContent = await page.evaluate(() => document.body?.innerText || '');
@@ -86,7 +86,7 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
 
     // Wait for navigation
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'commit', timeout: 15000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
     ]);
     await new Promise(r => setTimeout(r, 3000));
 
