@@ -87,9 +87,13 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
     finalMessage = addVariation(messageTemplate, state.sentTotal);
   }
 
-  // Send
+  // Send with retry (max 3 attempts per link)
   let accountDead = false;
   let accountBanned = false;
+  let sendSuccess = false;
+  const retries = state.retryCount || {};
+  const currentRetries = retries[state.currentIndex] || 0;
+
   try {
     const { sendMessageViaPuppeteer } = await import('./carousell/auth');
     const sendResult = await sendMessageViaPuppeteer(account.cookie!, currentLink, finalMessage, account.region || 'ph');
@@ -97,22 +101,40 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
       state.sentTotal++;
       state.sentToday++;
       state.lastError = '';
+      sendSuccess = true;
+      delete retries[state.currentIndex];
     } else {
-      state.failedTotal++;
       state.lastError = sendResult.error || 'Send failed';
       if (sendResult.error === 'ACCOUNT_BANNED') {
         accountBanned = true;
+        state.failedTotal++;
       } else if (isAccountError(sendResult.error)) {
         accountDead = true;
+        state.failedTotal++;
+      } else {
+        // Non-fatal: retry up to 3 times
+        retries[state.currentIndex] = currentRetries + 1;
+        if (retries[state.currentIndex] >= 3) {
+          state.failedTotal++;
+          delete retries[state.currentIndex];
+        }
       }
     }
   } catch (e: any) {
-    state.failedTotal++;
     state.lastError = e.message;
     if (isAccountError(e.message)) {
       accountDead = true;
+      state.failedTotal++;
+    } else {
+      retries[state.currentIndex] = currentRetries + 1;
+      if (retries[state.currentIndex] >= 3) {
+        state.failedTotal++;
+        delete retries[state.currentIndex];
+      }
     }
   }
+
+  state.retryCount = retries;
 
   // If account banned
   if (accountBanned) {

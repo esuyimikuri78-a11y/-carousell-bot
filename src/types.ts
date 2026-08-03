@@ -24,6 +24,7 @@ export interface BotState {
   lastError: string;
   dayResetAt: number;
   uniquifier: boolean;
+  retryCount: Record<number, number>; // link index → retry count
 }
 
 export interface SendResult {
@@ -56,4 +57,5 @@ export const DEFAULT_STATE: BotState = {
   lastError: '',
   dayResetAt: 0,
   uniquifier: true,
+  retryCount: {},
 };
