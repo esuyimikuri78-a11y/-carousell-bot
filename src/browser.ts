@@ -1,4 +1,5 @@
 import { REGIONS } from './types';
+import { mkdirSync } from 'fs';
 
 // Force dynamic ESM import (TypeScript compile to CJS breaks normal import())
 export async function dynamicImport(specifier: string): Promise<any> {
@@ -50,10 +51,9 @@ export async function launchBrowser() {
     args = STEALTH_ARGS;
   } else {
     const chromium = await dynamicImport('@sparticuz/chromium');
-    // Fix EACCES on /tmp: set unique cache dir per process
-    const cacheDir = `/tmp/chromium-${process.pid}`;
+    // Fix EACCES on /tmp: use default location but ensure it exists
     chromium.default.setGraphicsMode = false;
-    executablePath = await chromium.default.executablePath(cacheDir);
+    executablePath = await chromium.default.executablePath();
     args = [...chromium.default.args, ...STEALTH_ARGS.filter(a => !chromium.default.args.includes(a))];
   }
 
