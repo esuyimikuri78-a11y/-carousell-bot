@@ -50,7 +50,10 @@ export async function launchBrowser() {
     args = STEALTH_ARGS;
   } else {
     const chromium = await dynamicImport('@sparticuz/chromium');
-    executablePath = await chromium.default.executablePath();
+    // Fix EACCES on /tmp: set unique cache dir per process
+    const cacheDir = `/tmp/chromium-${process.pid}`;
+    chromium.default.setGraphicsMode = false;
+    executablePath = await chromium.default.executablePath(cacheDir);
     args = [...chromium.default.args, ...STEALTH_ARGS.filter(a => !chromium.default.args.includes(a))];
   }
 
