@@ -2,8 +2,9 @@ import TelegramBot from 'node-telegram-bot-api';
 import * as storage from './storage';
 import { startScheduler, stopScheduler, formatTimer } from './scheduler';
 import { CarousellAccount, REGIONS } from './types';
-import { validateCookie } from './carousell/auth';
+import { validateCookie, extractUserFromJwt, fetchChatToken } from './carousell/auth';
 import { addVariation } from './uniquifier';
+import { startWarmer, stopWarmer } from './warmer';
 import crypto from 'crypto';
 
 function esc(text: string): string {
@@ -18,7 +19,28 @@ const bot = new TelegramBot(process.env.BOT_TOKEN!, { polling: true });
 const menuMsgId = new Map<number, number>();
 const waitingFor = new Map<number, string>();
 const pendingRegion = new Map<number, string>();
-const selectedRegion = new Map<number, string>(); // geo per user
+const selectedRegion = new Map<number, string>();
+
+// Cleanup stale entries every 30 min to prevent memory leak
+const STALE_MS = 30 * 60 * 1000;
+const lastActivity = new Map<number, number>();
+
+function touchUser(chatId: number) {
+  lastActivity.set(chatId, Date.now());
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [chatId, ts] of lastActivity) {
+    if (now - ts > STALE_MS) {
+      menuMsgId.delete(chatId);
+      waitingFor.delete(chatId);
+      pendingRegion.delete(chatId);
+      selectedRegion.delete(chatId);
+      lastActivity.delete(chatId);
+    }
+  }
+}, 5 * 60 * 1000);
 
 export function initBot(): void {
   bot.onText(/\/start/, handleStart);
@@ -47,6 +69,7 @@ async function editOrSend(chatId: number, text: string, keyboard: TelegramBot.In
 
 async function handleStart(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
+  touchUser(chatId);
   await storage.addActiveChat(chatId);
   try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
 
@@ -112,7 +135,7 @@ async function showMainMenu(chatId: number) {
     statusLine,
     '',
     `👤 Аккаунты: <b>${validAccs.length}</b>/${accounts.length}`,
-    `🔗 Ссылок: <b>${links.length}</b>${state.currentIndex > 0 ? ` (${state.currentIndex})` : ''}`,
+    `🔗 Ссылок: <b>${links.length}</b>`,
     `💬 Сообщение: ${message ? '✅' : '❌'}`,
     `⏱ ${state.interval} мин | 📊 ${state.dailyLimit || '∞'}/день | 🔄 ${state.uniquifier ? '✅' : '❌'}`,
     state.warming ? `🔥 Прогрев: ${state.warmToday || 0}/${state.warmDailyLimit || '∞'}` : '',
@@ -141,6 +164,7 @@ async function showMainMenu(chatId: number) {
 async function handleCallback(query: TelegramBot.CallbackQuery) {
   const chatId = query.message!.chat.id;
   const data = query.data!;
+  touchUser(chatId);
   try { await bot.answerCallbackQuery(query.id); } catch {}
   if (data === 'noop') return;
 
@@ -160,10 +184,8 @@ async function handleCallback(query: TelegramBot.CallbackQuery) {
   if (data === 'change_geo') return showGeoPicker(chatId);
 
   // Warmer
-  // Warmer
   if (data === 'menu_warmer') return showWarmerMenu(chatId);
   if (data === 'warmer_toggle') return handleWarmerToggle(chatId);
-  if (data === 'warmer_set_interval') return handleWarmerSetInterval(chatId);
   if (data.startsWith('warmer_interval_')) {
     const mins = parseInt(data.split('_')[2]);
     await storage.setState(chatId, { warmInterval: mins });
@@ -329,7 +351,6 @@ async function handleCheckAccounts(chatId: number) {
       continue;
     }
     try {
-      const { extractUserFromJwt, fetchChatToken } = await import('./carousell/auth');
       const jwt = extractUserFromJwt(acc.cookie);
       if (jwt.error) {
         results.push(`${r.flag} ❌ ${name} — ${jwt.error}`);
@@ -360,14 +381,11 @@ async function handleCheckAccounts(chatId: number) {
 
 async function showLinksMenu(chatId: number) {
   const links = await storage.getLinks(chatId);
-  const state = await storage.getState(chatId);
 
   const text = [
     '🔗 <b>Ссылки</b>',
     '━━━━━━━━━━━━━━━━━━',
     `В очереди: <b>${links.length}</b>`,
-    `Обработано: <b>${state.currentIndex}</b>`,
-    `Осталось: <b>${links.length - state.currentIndex}</b>`,
   ].join('\n');
 
   await editOrSend(chatId, text, {
@@ -499,8 +517,6 @@ async function handleResumeSending(chatId: number) {
 async function showWarmerMenu(chatId: number) {
   const state = await storage.getState(chatId);
   const accounts = await storage.getAccounts(chatId);
-  const { REGIONS } = await import('./types');
-
   const warmAccounts = accounts.filter(a => a.mode === 'warm' || a.mode === 'both');
   const sendAccounts = accounts.filter(a => a.mode === 'send' || a.mode === 'both');
 
@@ -576,7 +592,6 @@ async function handleToggleMode(chatId: number, index: number) {
 // Warmer toggle
 async function handleWarmerToggle(chatId: number) {
   const state = await storage.getState(chatId);
-  const { startWarmer, stopWarmer } = await import('./warmer');
 
   if (state.warming) {
     stopWarmer(chatId);
@@ -585,10 +600,6 @@ async function handleWarmerToggle(chatId: number) {
     await storage.setState(chatId, { warming: true });
     startWarmer(chatId, notify);
   }
-  await showWarmerMenu(chatId);
-}
-
-async function handleWarmerSetInterval(chatId: number) {
   await showWarmerMenu(chatId);
 }
 
@@ -670,7 +681,9 @@ async function handleMessage(msg: TelegramBot.Message) {
 
   // Links
   if (waiting === 'links') {
-    const links = msg.text.split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+    const links = msg.text.split('\n')
+      .map(l => l.trim())
+      .filter(l => /^https?:\/\/[^\s]+$/i.test(l));
     if (links.length === 0) {
       await editOrSend(chatId, '❌ Ссылки не найдены.', { inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'menu_links' }]] });
       return;
@@ -722,7 +735,6 @@ async function handleDocument(msg: TelegramBot.Message) {
 
       const region = pendingRegion.get(chatId) || 'ph';
       pendingRegion.delete(chatId);
-      const { validateCookie } = await import('./carousell/auth');
       const validation = await validateCookie(cookie);
 
       await storage.addAccount(chatId, {
@@ -744,7 +756,9 @@ async function handleDocument(msg: TelegramBot.Message) {
       const fileLink = await bot.getFileLink(doc.file_id);
       const resp = await fetch(fileLink);
       const text = await resp.text();
-      const links = text.split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+      const links = text.split('\n')
+        .map(l => l.trim())
+        .filter(l => /^https?:\/\/[^\s]+$/i.test(l));
       if (links.length === 0) {
         await editOrSend(chatId, '❌ Файл пуст.', { inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'menu_links' }]] });
         return;

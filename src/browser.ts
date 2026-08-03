@@ -11,7 +11,7 @@ export function parseCookies(cookieStr: string, domain: string): Array<{ name: s
     if (eqIdx === -1) return null;
     return {
       name: c.slice(0, eqIdx).trim(),
-      value: c.slice(eqIdx + 1).trim(),
+      value: c.slice(eqIdx + 1).trim(), // Keeps everything after first = (handles base64 values with =)
       domain,
       path: '/',
     };

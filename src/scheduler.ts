@@ -1,9 +1,11 @@
 import { getState, setState, getLinks, getAccounts, getMessage, removeProcessedLinks, updateAccount } from './storage';
 import { addVariation } from './uniquifier';
+import { sendMessageViaPuppeteer } from './carousell/auth';
 
 type NotifyFn = (chatId: number, text: string) => Promise<void>;
 
 const activeSchedulers = new Map<number, NodeJS.Timeout>();
+const ticking = new Map<number, boolean>(); // Lock to prevent concurrent ticks
 
 export function startScheduler(chatId: number, notify: NotifyFn): void {
   stopScheduler(chatId);
@@ -18,13 +20,22 @@ export function stopScheduler(chatId: number): void {
     clearInterval(id);
     activeSchedulers.delete(chatId);
   }
-}
-
-export function isSchedulerRunning(chatId: number): boolean {
-  return activeSchedulers.has(chatId);
+  ticking.delete(chatId);
 }
 
 async function tick(chatId: number, notify: NotifyFn): Promise<void> {
+  // Prevent concurrent ticks (race condition guard)
+  if (ticking.get(chatId)) return;
+  ticking.set(chatId, true);
+
+  try {
+    await doTick(chatId, notify);
+  } finally {
+    ticking.set(chatId, false);
+  }
+}
+
+async function doTick(chatId: number, notify: NotifyFn): Promise<void> {
   const state = await getState(chatId);
   if (!state.running || state.paused) return;
 
@@ -79,7 +90,6 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   }
 
   // === PARALLEL SEND: all accounts at once ===
-  const { sendMessageViaPuppeteer } = await import('./carousell/auth');
   const tasks: Promise<{ accountIdx: number; linkIdx: number; success: boolean; error?: string }>[] = [];
 
   for (let i = 0; i < batchSize; i++) {

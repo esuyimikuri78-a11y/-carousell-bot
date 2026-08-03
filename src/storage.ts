@@ -40,10 +40,6 @@ export async function getLinks(chatId: number): Promise<string[]> {
   return data || [];
 }
 
-export async function setLinks(chatId: number, links: string[]): Promise<void> {
-  await redis.set(`links:${chatId}`, links);
-}
-
 export async function addLinks(chatId: number, newLinks: string[]): Promise<number> {
   const links = await getLinks(chatId);
   links.push(...newLinks);
@@ -181,7 +177,4 @@ export async function deleteKey(key: string): Promise<boolean> {
   return true;
 }
 
-// Revoke user access
-export async function revokeAccess(chatId: number): Promise<void> {
-  await redis.del(`activated:${chatId}`);
-}
+

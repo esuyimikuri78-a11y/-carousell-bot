@@ -42,10 +42,6 @@ export function stopWarmer(chatId: number): void {
   }
 }
 
-export function isWarmerRunning(chatId: number): boolean {
-  return activeWarmers.has(chatId);
-}
-
 async function warmCycle(chatId: number, notify: NotifyFn) {
   const state = await getState(chatId);
   if (!state.warming) return;
