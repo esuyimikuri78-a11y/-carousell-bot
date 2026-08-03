@@ -109,9 +109,9 @@ async function doTick(chatId: number, notify: NotifyFn): Promise<void> {
       results.push({ accountIdx: i, linkIdx: i, success: false, error: e.message });
     }
 
-    // Small delay between sends to avoid conflicts
+    // Small delay between sends
     if (i < batchSize - 1) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 1000));
     }
   }
 

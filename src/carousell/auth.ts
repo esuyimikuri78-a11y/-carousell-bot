@@ -53,105 +53,80 @@ export async function fetchChatToken(cookie: string, region: string = 'ph'): Pro
   }
 }
 
-// Send message via Puppeteer
+// Send message via Puppeteer (optimized for speed)
 export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string, message: string, region: string = 'ph'): Promise<{ success: boolean; error?: string }> {
   let page: any;
   const timeout = setTimeout(() => {
     if (page) try { page.close(); } catch {}
-  }, 120000);
+  }, 90000);
 
   try {
     const browser = await getBrowser();
     page = await setupPage(browser, cookie, region);
 
-    await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await new Promise(r => setTimeout(r, 5000));
+    // Fast load - don't wait for all resources
+    await page.goto(listingUrl, { waitUntil: 'commit', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 2000));
 
     const pageContent = await page.evaluate(() => document.body?.innerText || '');
     if (isBanned(pageContent)) return { success: false, error: 'ACCOUNT_BANNED' };
 
-    // Find Chat button
-    const chatBtnTexts = ['Chat', 'Chat with seller', 'View Chat', '💬 Chat'];
-    const chatBtn = await page.evaluate((texts: string[]) => {
-      let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
-      if (btn) return true;
-      const btns = Array.from(document.querySelectorAll('button'));
-      for (const b of btns) {
-        const text = b.textContent?.trim();
-        if (text && texts.includes(text)) return true;
-      }
+    // Find and click Chat button
+    const clicked = await page.evaluate(() => {
+      const btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb')
+        || Array.from(document.querySelectorAll('button')).find(b => {
+          const t = b.textContent?.trim();
+          return t === 'Chat' || t === 'Chat with seller' || t === 'View Chat';
+        });
+      if (btn) { (btn as HTMLElement).click(); return true; }
       return false;
-    }, chatBtnTexts);
+    });
 
-    if (!chatBtn) return { success: false, error: 'Chat button not found' };
+    if (!clicked) return { success: false, error: 'Chat button not found' };
 
-    // Click Chat and wait for navigation
+    // Wait for navigation
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
-      page.evaluate((texts: string[]) => {
-        let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
-        if (!btn) {
-          const btns = Array.from(document.querySelectorAll('button'));
-          for (const b of btns) {
-            const text = b.textContent?.trim();
-            if (text && texts.includes(text)) { btn = b; break; }
-          }
-        }
-        if (btn) (btn as HTMLElement).click();
-      }, chatBtnTexts),
+      page.waitForNavigation({ waitUntil: 'commit', timeout: 15000 }).catch(() => {}),
     ]);
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Wait and verify page is still alive
-    await new Promise(r => setTimeout(r, 8000));
-    if (page.isClosed()) return { success: false, error: 'Page closed after Chat click' };
+    if (page.isClosed()) return { success: false, error: 'Page closed after Chat' };
 
-    // Find textarea
+    // Find textarea - fast polling
     let input: any = null;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 5; i++) {
       try {
-        const frame = page.mainFrame();
-        input = await frame.$('textarea') || await frame.$('[contenteditable="true"]');
+        input = await page.$('textarea') || await page.$('[contenteditable="true"]');
         if (input) break;
       } catch {}
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 1500));
     }
 
     if (!input) return { success: false, error: 'Chat input not found' };
 
-    // Helper: check if page is still alive
-    const isAlive = () => {
-      try { return !page.isClosed(); } catch { return false; }
-    };
-
-    if (!isAlive()) return { success: false, error: 'Page closed before typing' };
-
+    // Focus and type
     await input.click();
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 200));
 
-    // Type multiline message
+    // Type message - fast, no per-char delay
     const lines = message.split('\n');
     for (let i = 0; i < lines.length; i++) {
-      if (!isAlive()) return { success: false, error: 'Page closed during typing' };
       if (i > 0) {
         await page.keyboard.down('Shift');
         await page.keyboard.press('Enter');
         await page.keyboard.up('Shift');
-        await new Promise(r => setTimeout(r, 50));
       }
-      await page.keyboard.type(lines[i], { delay: 15 });
+      await page.keyboard.type(lines[i], { delay: 5 });
     }
-    await new Promise(r => setTimeout(r, 1000));
-
-    if (!isAlive()) return { success: false, error: 'Page closed before send' };
+    await new Promise(r => setTimeout(r, 500));
 
     // Click Send
     let sent = false;
     try {
-      const frame = page.mainFrame();
-      const btns = await frame.$$('button');
+      const btns = await page.$$('button');
       for (const btn of btns) {
         try {
-          const text = await frame.evaluate((el: any) => el.textContent?.trim().toLowerCase(), btn);
+          const text = await page.evaluate((el: any) => el.textContent?.trim().toLowerCase(), btn);
           if (text === 'send' || text === 'отправить') {
             await btn.click();
             sent = true;
@@ -160,23 +135,20 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
         } catch {}
       }
     } catch {}
-    if (!sent && isAlive()) await page.keyboard.press('Enter');
+    if (!sent) await page.keyboard.press('Enter');
 
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 2000));
 
-    // Verify: check if textarea is empty (message was sent)
-    if (isAlive()) {
-      try {
-        const textareaValue = await page.evaluate(() => {
-          const ta = document.querySelector('textarea');
-          return ta ? ta.value : null;
-        });
-        // If textarea still has text, message likely wasn't sent
-        if (textareaValue && textareaValue.trim().length > 0) {
-          return { success: false, error: 'Message not sent (textarea not empty)' };
-        }
-      } catch {}
-    }
+    // Verify: textarea should be empty
+    try {
+      const val = await page.evaluate(() => {
+        const ta = document.querySelector('textarea');
+        return ta ? ta.value : null;
+      });
+      if (val && val.trim().length > 0) {
+        return { success: false, error: 'Message not sent' };
+      }
+    } catch {}
 
     return { success: true };
   } catch (e: any) {
