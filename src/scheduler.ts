@@ -113,9 +113,14 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   const bannedAccounts: string[][] = [];
 
   for (const r of results) {
+    const accName = validAccounts[r.accountIdx].username || 'unknown';
+    const link = links[r.linkIdx];
+
     if (r.success) {
       state.sentTotal++;
       state.sentToday++;
+      // Notify per message
+      await notify(chatId, `✅ [${accName}] Отправлено\n🔗 ${link}`);
     } else {
       state.lastError = r.error || 'Send failed';
       if (r.error === 'ACCOUNT_BANNED') {
@@ -129,8 +134,10 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
         const linkRetries = (retries[r.linkIdx] || 0) + 1;
         if (linkRetries >= 3) {
           state.failedTotal++;
+          await notify(chatId, `❌ [${accName}] Ошибка: ${r.error}`);
         } else {
           retries[r.linkIdx] = linkRetries;
+          await notify(chatId, `⚠️ [${accName}] Retry ${linkRetries}/3: ${r.error}`);
         }
       }
     }
