@@ -202,37 +202,39 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     }
 
     // Click Chat button and wait for navigation
-    await page.evaluate((texts: string[]) => {
-      let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
-      if (!btn) {
-        const btns = Array.from(document.querySelectorAll('button'));
-        for (const b of btns) {
-          const text = b.textContent?.trim();
-          if (text && texts.includes(text)) { btn = b; break; }
+    // Use Promise.all to handle navigation that starts from the click
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}),
+      page.evaluate((texts: string[]) => {
+        let btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb');
+        if (!btn) {
+          const btns = Array.from(document.querySelectorAll('button'));
+          for (const b of btns) {
+            const text = b.textContent?.trim();
+            if (text && texts.includes(text)) { btn = b; break; }
+          }
         }
-      }
-      if (btn) (btn as HTMLElement).click();
-    }, chatBtnTexts);
+        if (btn) (btn as HTMLElement).click();
+      }, chatBtnTexts),
+    ]);
 
-    // Wait for navigation to complete (Chat navigates to /inbox/)
-    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 5000));
+    // Wait for the new page to fully load
+    await new Promise(r => setTimeout(r, 8000));
 
-    // Find textarea on the new page (try multiple times)
+    // Now use page.mainFrame() to get the current frame context
     let input: any = null;
     for (let i = 0; i < 10; i++) {
       try {
-        input = await page.$('textarea') || await page.$('[contenteditable="true"]');
+        const frame = page.mainFrame();
+        input = await frame.$('textarea') || await frame.$('[contenteditable="true"]');
         if (input) break;
-      } catch {
-        // Frame might be detached, wait and retry
-      }
+      } catch {}
       await new Promise(r => setTimeout(r, 3000));
     }
 
     if (!input) return { success: false, error: 'Chat input not found' };
 
-    // Focus and type
+    // Focus and type using keyboard (avoids frame issues)
     await input.click();
     await new Promise(r => setTimeout(r, 500));
 
@@ -251,15 +253,20 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
 
     // Click Send
     let sent = false;
-    const btns = await page.$$('button');
-    for (const btn of btns) {
-      const text = await page.evaluate((el: any) => el.textContent?.trim().toLowerCase(), btn);
-      if (text === 'send' || text === 'отправить') {
-        await btn.click();
-        sent = true;
-        break;
+    try {
+      const frame = page.mainFrame();
+      const btns = await frame.$$('button');
+      for (const btn of btns) {
+        try {
+          const text = await frame.evaluate((el: any) => el.textContent?.trim().toLowerCase(), btn);
+          if (text === 'send' || text === 'отправить') {
+            await btn.click();
+            sent = true;
+            break;
+          }
+        } catch {}
       }
-    }
+    } catch {}
     if (!sent) await page.keyboard.press('Enter');
 
     await new Promise(r => setTimeout(r, 3000));
