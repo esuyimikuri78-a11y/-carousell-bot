@@ -599,7 +599,7 @@ async function handleWarmerToggle(chatId: number) {
     await storage.setState(chatId, { warming: false });
   } else {
     await storage.setState(chatId, { warming: true });
-    startWarmer(chatId, notify);
+    startWarmer(chatId, notifyWarm);
   }
   await showWarmerMenu(chatId);
 }
@@ -773,43 +773,59 @@ async function handleDocument(msg: TelegramBot.Message) {
   }
 }
 
-// Notify — single message, accumulates updates
-const notifyMsgId = new Map<number, number>();
-const notifyLines = new Map<number, string[]>();
+// Notify — single message per channel (sending / warming)
+interface NotifyChannel {
+  msgId: number;
+  lines: string[];
+}
 
-export async function notify(chatId: number, text: string) {
-  const lines = notifyLines.get(chatId) || [];
-  lines.push(text);
-  // Keep last 20 lines
-  if (lines.length > 20) lines.shift();
-  notifyLines.set(chatId, lines);
+const notifyChannels = new Map<string, NotifyChannel>();
 
-  const fullText = lines.join('\n');
-  const msgId = notifyMsgId.get(chatId);
+function getChannelKey(chatId: number, type: string): string {
+  return `${chatId}:${type}`;
+}
+
+async function sendNotify(chatId: number, text: string, type: string) {
+  const key = getChannelKey(chatId, type);
+  const ch = notifyChannels.get(key) || { msgId: 0, lines: [] };
+
+  ch.lines.push(text);
+  if (ch.lines.length > 15) ch.lines.shift();
+
+  const fullText = ch.lines.join('\n');
 
   try {
-    if (msgId) {
-      await bot.editMessageText(fullText, { chat_id: chatId, message_id: msgId });
+    if (ch.msgId) {
+      await bot.editMessageText(fullText, { chat_id: chatId, message_id: ch.msgId });
     } else {
       const sent = await bot.sendMessage(chatId, fullText);
-      notifyMsgId.set(chatId, sent.message_id);
+      ch.msgId = sent.message_id;
     }
   } catch {
-    // If edit fails, send new
     try {
       const sent = await bot.sendMessage(chatId, fullText);
-      notifyMsgId.set(chatId, sent.message_id);
+      ch.msgId = sent.message_id;
     } catch {}
   }
 
-  // Refresh menu too
+  notifyChannels.set(key, ch);
+}
+
+// Sending notifications
+export async function notify(chatId: number, text: string) {
+  await sendNotify(chatId, text, 'send');
   try { await showMainMenu(chatId); } catch {}
 }
 
-// Clear notification log (call when starting fresh)
+// Warmer notifications (separate message)
+export async function notifyWarm(chatId: number, text: string) {
+  await sendNotify(chatId, text, 'warm');
+}
+
+// Clear notification logs
 export function clearNotify(chatId: number) {
-  notifyLines.delete(chatId);
-  notifyMsgId.delete(chatId);
+  notifyChannels.delete(getChannelKey(chatId, 'send'));
+  notifyChannels.delete(getChannelKey(chatId, 'warm'));
 }
 
 // ==================== ADMIN: KEY MANAGEMENT ====================

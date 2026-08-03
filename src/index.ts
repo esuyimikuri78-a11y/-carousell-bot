@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { initBot, bot, notify } from './bot';
+import { initBot, bot, notify, notifyWarm } from './bot';
 import { getActiveChats, getState } from './storage';
 import { startScheduler } from './scheduler';
 import { startWarmer } from './warmer';
@@ -29,7 +29,7 @@ async function recover() {
       }
       if (state.warming) {
         console.log(`Recovering warmer for chat ${chatId}`);
-        startWarmer(chatId, notify);
+        startWarmer(chatId, notifyWarm);
       }
     }
   } catch (e) {
