@@ -55,6 +55,14 @@ export async function clearLinks(chatId: number): Promise<void> {
   await redis.del(`links:${chatId}`);
 }
 
+// Remove first N links from queue (after processing)
+export async function removeProcessedLinks(chatId: number, count: number): Promise<number> {
+  const links = await getLinks(chatId);
+  const remaining = links.slice(count);
+  await redis.set(`links:${chatId}`, remaining);
+  return remaining.length;
+}
+
 // Message template
 export async function getMessage(chatId: number): Promise<string> {
   const data = await redis.get<string>(`message:${chatId}`);

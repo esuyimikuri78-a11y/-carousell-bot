@@ -43,7 +43,7 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
 
   // Check links
   const links = await getLinks(chatId);
-  if (state.currentIndex >= links.length) {
+  if (links.length === 0) {
     await setState(chatId, { running: false, paused: false, nextRunAt: 0 });
     await notify(chatId, `✅ Рассылка завершена! Отправлено: ${state.sentTotal}, ошибок: ${state.failedTotal}`);
     stopScheduler(chatId);
@@ -70,7 +70,7 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   }
 
   // Daily limit check
-  const batchSize = Math.min(validAccounts.length, links.length - state.currentIndex);
+  const batchSize = Math.min(validAccounts.length, links.length);
   if (state.dailyLimit > 0 && state.sentToday + batchSize > state.dailyLimit) {
     await setState(chatId, { running: false, paused: false, nextRunAt: 0 });
     await notify(chatId, `📊 Дневной лимит ${state.dailyLimit} достигнут.`);
@@ -83,9 +83,8 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   const tasks: Promise<{ accountIdx: number; linkIdx: number; success: boolean; error?: string }>[] = [];
 
   for (let i = 0; i < batchSize; i++) {
-    const linkIdx = state.currentIndex + i;
     const account = validAccounts[i % validAccounts.length];
-    const link = links[linkIdx];
+    const link = links[i];
 
     // Uniquify message per account
     let finalMessage = messageTemplate;
@@ -96,9 +95,9 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
     const task = (async () => {
       try {
         const result = await sendMessageViaPuppeteer(account.cookie!, link, finalMessage, account.region || 'ph');
-        return { accountIdx: i, linkIdx, success: result.success, error: result.error };
+        return { accountIdx: i, linkIdx: i, success: result.success, error: result.error };
       } catch (e: any) {
-        return { accountIdx: i, linkIdx, success: false, error: e.message };
+        return { accountIdx: i, linkIdx: i, success: false, error: e.message };
       }
     })();
 
@@ -117,7 +116,6 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
     if (r.success) {
       state.sentTotal++;
       state.sentToday++;
-      delete retries[r.linkIdx];
     } else {
       state.lastError = r.error || 'Send failed';
       if (r.error === 'ACCOUNT_BANNED') {
@@ -127,21 +125,28 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
         state.failedTotal++;
         deadAccounts.push(validAccounts[r.accountIdx].username || 'unknown');
       } else {
-        retries[r.linkIdx] = (retries[r.linkIdx] || 0) + 1;
-        if (retries[r.linkIdx] >= 3) {
+        // Non-fatal: count as failure after retries
+        const linkRetries = (retries[r.linkIdx] || 0) + 1;
+        if (linkRetries >= 3) {
           state.failedTotal++;
-          delete retries[r.linkIdx];
+        } else {
+          retries[r.linkIdx] = linkRetries;
         }
       }
     }
   }
 
   state.retryCount = retries;
-  state.currentIndex += batchSize;
+
+  // Remove processed links from queue
+  const { removeProcessedLinks } = await import('./storage');
+  const remaining = await removeProcessedLinks(chatId, batchSize);
+  state.currentIndex = 0; // Reset since we removed processed links
+
   state.nextRunAt = Date.now() + state.interval * 60 * 1000;
 
   await setState(chatId, {
-    currentIndex: state.currentIndex,
+    currentIndex: 0,
     sentTotal: state.sentTotal,
     sentToday: state.sentToday,
     failedTotal: state.failedTotal,
@@ -167,9 +172,8 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   // Notify progress
   const successCount = results.filter(r => r.success).length;
   const failCount = results.filter(r => !r.success).length;
-  const progress = `${state.currentIndex} / ${links.length}`;
   const timer = formatTimer(state.nextRunAt - Date.now());
-  await notify(chatId, `📨 Отправлено: ${successCount} | Ошибок: ${failCount}\n📊 Прогресс: ${progress} | Следующая через ${timer}`);
+  await notify(chatId, `📨 Отправлено: ${successCount} | Ошибок: ${failCount}\n🔗 Осталось: ${remaining} | Следующая через ${timer}`);
 }
 
 function isAccountError(error: string | undefined): boolean {
