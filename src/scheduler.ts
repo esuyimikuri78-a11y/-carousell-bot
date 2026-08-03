@@ -38,14 +38,6 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
     await setState(chatId, { sentToday: 0, dayResetAt: state.dayResetAt });
   }
 
-  // Daily limit reached
-  if (state.dailyLimit > 0 && state.sentToday >= state.dailyLimit) {
-    await setState(chatId, { running: false, paused: false, nextRunAt: 0, lastError: '' });
-    await notify(chatId, `Дневной лимит ${state.dailyLimit} сообщений достигнут.`);
-    stopScheduler(chatId);
-    return;
-  }
-
   // Not time yet
   if (now < state.nextRunAt) return;
 
@@ -53,7 +45,7 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   const links = await getLinks(chatId);
   if (state.currentIndex >= links.length) {
     await setState(chatId, { running: false, paused: false, nextRunAt: 0 });
-    await notify(chatId, `Рассылка завершена! Отправлено: ${state.sentTotal}, ошибок: ${state.failedTotal}`);
+    await notify(chatId, `✅ Рассылка завершена! Отправлено: ${state.sentTotal}, ошибок: ${state.failedTotal}`);
     stopScheduler(chatId);
     return;
   }
@@ -62,106 +54,90 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   const messageTemplate = await getMessage(chatId);
   if (!messageTemplate) {
     await setState(chatId, { running: false, lastError: 'No message template' });
-    await notify(chatId, 'Ошибка: не задан шаблон сообщения.');
+    await notify(chatId, '❌ Не задан шаблон сообщения.');
     stopScheduler(chatId);
     return;
   }
 
   // Check accounts
   const accounts = await getAccounts(chatId);
-  const validAccounts = accounts.filter(a => a.valid);
+  const validAccounts = accounts.filter(a => a.valid && !a.banned);
   if (validAccounts.length === 0) {
     await setState(chatId, { running: false, lastError: 'No valid accounts' });
-    await notify(chatId, 'Ошибка: нет валидных аккаунтов.');
+    await notify(chatId, '❌ Нет валидных аккаунтов.');
     stopScheduler(chatId);
     return;
   }
 
-  // Round-robin: each link → next account
-  const currentLink = links[state.currentIndex];
-  const account = validAccounts[state.currentIndex % validAccounts.length];
-
-  // Uniquify message
-  let finalMessage = messageTemplate;
-  if (state.uniquifier) {
-    finalMessage = addVariation(messageTemplate, state.sentTotal);
+  // Daily limit check
+  const batchSize = Math.min(validAccounts.length, links.length - state.currentIndex);
+  if (state.dailyLimit > 0 && state.sentToday + batchSize > state.dailyLimit) {
+    await setState(chatId, { running: false, paused: false, nextRunAt: 0 });
+    await notify(chatId, `📊 Дневной лимит ${state.dailyLimit} достигнут.`);
+    stopScheduler(chatId);
+    return;
   }
 
-  // Send with retry (max 3 attempts per link)
-  let accountDead = false;
-  let accountBanned = false;
-  let sendSuccess = false;
-  const retries = state.retryCount || {};
-  const currentRetries = retries[state.currentIndex] || 0;
+  // === PARALLEL SEND: all accounts at once ===
+  const { sendMessageViaPuppeteer } = await import('./carousell/auth');
+  const tasks: Promise<{ accountIdx: number; linkIdx: number; success: boolean; error?: string }>[] = [];
 
-  try {
-    const { sendMessageViaPuppeteer } = await import('./carousell/auth');
-    const sendResult = await sendMessageViaPuppeteer(account.cookie!, currentLink, finalMessage, account.region || 'ph');
-    if (sendResult.success) {
+  for (let i = 0; i < batchSize; i++) {
+    const linkIdx = state.currentIndex + i;
+    const account = validAccounts[i % validAccounts.length];
+    const link = links[linkIdx];
+
+    // Uniquify message per account
+    let finalMessage = messageTemplate;
+    if (state.uniquifier) {
+      finalMessage = addVariation(messageTemplate, state.sentTotal + i);
+    }
+
+    const task = (async () => {
+      try {
+        const result = await sendMessageViaPuppeteer(account.cookie!, link, finalMessage, account.region || 'ph');
+        return { accountIdx: i, linkIdx, success: result.success, error: result.error };
+      } catch (e: any) {
+        return { accountIdx: i, linkIdx, success: false, error: e.message };
+      }
+    })();
+
+    tasks.push(task);
+  }
+
+  // Wait for all to complete
+  const results = await Promise.all(tasks);
+
+  // Process results
+  const retries = state.retryCount || {};
+  const deadAccounts: string[] = [];
+  const bannedAccounts: string[][] = [];
+
+  for (const r of results) {
+    if (r.success) {
       state.sentTotal++;
       state.sentToday++;
-      state.lastError = '';
-      sendSuccess = true;
-      delete retries[state.currentIndex];
+      delete retries[r.linkIdx];
     } else {
-      state.lastError = sendResult.error || 'Send failed';
-      if (sendResult.error === 'ACCOUNT_BANNED') {
-        accountBanned = true;
+      state.lastError = r.error || 'Send failed';
+      if (r.error === 'ACCOUNT_BANNED') {
         state.failedTotal++;
-      } else if (isAccountError(sendResult.error)) {
-        accountDead = true;
+        bannedAccounts.push([validAccounts[r.accountIdx].id, validAccounts[r.accountIdx].username || '']);
+      } else if (isAccountError(r.error)) {
         state.failedTotal++;
+        deadAccounts.push(validAccounts[r.accountIdx].username || 'unknown');
       } else {
-        // Non-fatal: retry up to 3 times
-        retries[state.currentIndex] = currentRetries + 1;
-        if (retries[state.currentIndex] >= 3) {
+        retries[r.linkIdx] = (retries[r.linkIdx] || 0) + 1;
+        if (retries[r.linkIdx] >= 3) {
           state.failedTotal++;
-          delete retries[state.currentIndex];
+          delete retries[r.linkIdx];
         }
-      }
-    }
-  } catch (e: any) {
-    state.lastError = e.message;
-    if (isAccountError(e.message)) {
-      accountDead = true;
-      state.failedTotal++;
-    } else {
-      retries[state.currentIndex] = currentRetries + 1;
-      if (retries[state.currentIndex] >= 3) {
-        state.failedTotal++;
-        delete retries[state.currentIndex];
       }
     }
   }
 
   state.retryCount = retries;
-
-  // If account banned
-  if (accountBanned) {
-    const { updateAccount } = await import('./storage');
-    const allAccounts = await getAccounts(chatId);
-    const idx = allAccounts.findIndex(a => a.id === account.id);
-    if (idx !== -1) {
-      await updateAccount(chatId, idx, { valid: false, banned: true });
-    }
-    const accName = account.username || account.login || 'unknown';
-    await notify(chatId, `🚫 Аккаунт ${accName} ЗАБАНЕН!\nАвтоматически переключаю на следующий.`);
-  }
-
-  // If account died (cookie expired etc)
-  if (accountDead && !accountBanned) {
-    const { updateAccount } = await import('./storage');
-    const allAccounts = await getAccounts(chatId);
-    const idx = allAccounts.findIndex(a => a.id === account.id);
-    if (idx !== -1) {
-      await updateAccount(chatId, idx, { valid: false });
-    }
-    const accName = account.username || account.login || 'unknown';
-    await notify(chatId, `⚠️ Аккаунт ${accName} умер!\nПричина: ${state.lastError}`);
-  }
-
-  // Next
-  state.currentIndex++;
+  state.currentIndex += batchSize;
   state.nextRunAt = Date.now() + state.interval * 60 * 1000;
 
   await setState(chatId, {
@@ -171,18 +147,31 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
     failedTotal: state.failedTotal,
     nextRunAt: state.nextRunAt,
     lastError: state.lastError,
+    retryCount: state.retryCount,
   });
 
-  // Notify on success
-  if (!accountDead) {
-    const progress = `${state.currentIndex} / ${links.length}`;
-    const timer = formatTimer(state.nextRunAt - Date.now());
-    const accName = account.username || 'unknown';
-    await notify(chatId, `✅ [${accName}] ${progress} | Следующая через ${timer}`);
+  // Mark banned accounts
+  for (const [id, name] of bannedAccounts) {
+    const { updateAccount } = await import('./storage');
+    const allAccounts = await getAccounts(chatId);
+    const idx = allAccounts.findIndex(a => a.id === id);
+    if (idx !== -1) await updateAccount(chatId, idx, { valid: false, banned: true });
+    await notify(chatId, `🚫 ${name} ЗАБАНЕН!`);
   }
+
+  // Mark dead accounts
+  for (const name of deadAccounts) {
+    await notify(chatId, `⚠️ ${name} умер!`);
+  }
+
+  // Notify progress
+  const successCount = results.filter(r => r.success).length;
+  const failCount = results.filter(r => !r.success).length;
+  const progress = `${state.currentIndex} / ${links.length}`;
+  const timer = formatTimer(state.nextRunAt - Date.now());
+  await notify(chatId, `📨 Отправлено: ${successCount} | Ошибок: ${failCount}\n📊 Прогресс: ${progress} | Следующая через ${timer}`);
 }
 
-// Detect errors that mean the account is dead
 function isAccountError(error: string | undefined): boolean {
   if (!error) return false;
   const lower = error.toLowerCase();
@@ -192,7 +181,7 @@ function isAccountError(error: string | undefined): boolean {
     || lower.includes('403')
     || lower.includes('login')
     || lower.includes('sign in')
-    || lower.includes('just a moment')  // Cloudflare challenge
+    || lower.includes('just a moment')
     || lower.includes('challenge');
 }
 
