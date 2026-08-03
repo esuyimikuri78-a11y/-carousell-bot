@@ -1,10 +1,20 @@
 import { REGIONS } from './types';
-import { mkdirSync } from 'fs';
+import { dynamicImport } from './browser-helpers';
 
-// Force dynamic ESM import (TypeScript compile to CJS breaks normal import())
-export async function dynamicImport(specifier: string): Promise<any> {
-  return new Function('specifier', 'return import(specifier)')(specifier);
-}
+// Shared browser instance with queue
+let sharedBrowser: any = null;
+let browserLaunchPromise: Promise<any> | null = null;
+const STEALTH_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-blink-features=AutomationControlled',
+  '--disable-features=IsolateOrigins,site-per-process',
+  '--disable-infobars',
+  '--window-size=1920,1080',
+  '--start-maximized',
+  '--disable-gpu',
+];
 
 export function parseCookies(cookieStr: string, domain: string): Array<{ name: string; value: string; domain: string; path: string }> {
   return cookieStr.split(';').map(c => c.trim()).filter(Boolean).map(c => {
@@ -12,7 +22,7 @@ export function parseCookies(cookieStr: string, domain: string): Array<{ name: s
     if (eqIdx === -1) return null;
     return {
       name: c.slice(0, eqIdx).trim(),
-      value: c.slice(eqIdx + 1).trim(), // Keeps everything after first = (handles base64 values with =)
+      value: c.slice(eqIdx + 1).trim(),
       domain,
       path: '/',
     };
@@ -27,20 +37,34 @@ export function getBaseUrl(region: string): string {
   return `https://www.${getDomain(region)}`;
 }
 
-// Shared stealth args for Puppeteer
-const STEALTH_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-blink-features=AutomationControlled',
-  '--disable-features=IsolateOrigins,site-per-process',
-  '--disable-infobars',
-  '--window-size=1920,1080',
-  '--start-maximized',
-  '--disable-gpu',
-];
+// Get or launch a shared browser instance
+export async function getBrowser(): Promise<any> {
+  // If browser is alive, return it
+  if (sharedBrowser) {
+    try {
+      await sharedBrowser.version();
+      return sharedBrowser;
+    } catch {
+      sharedBrowser = null;
+    }
+  }
 
-export async function launchBrowser() {
+  // If someone else is launching, wait for them
+  if (browserLaunchPromise) {
+    return browserLaunchPromise;
+  }
+
+  // Launch new browser
+  browserLaunchPromise = doLaunch();
+  try {
+    sharedBrowser = await browserLaunchPromise;
+    return sharedBrowser;
+  } finally {
+    browserLaunchPromise = null;
+  }
+}
+
+async function doLaunch(): Promise<any> {
   const puppeteer = await dynamicImport('puppeteer-core');
 
   let executablePath: string;
@@ -51,7 +75,6 @@ export async function launchBrowser() {
     args = STEALTH_ARGS;
   } else {
     const chromium = await dynamicImport('@sparticuz/chromium');
-    // Fix EACCES on /tmp: use default location but ensure it exists
     chromium.default.setGraphicsMode = false;
     executablePath = await chromium.default.executablePath();
     args = [...chromium.default.args, ...STEALTH_ARGS.filter(a => !chromium.default.args.includes(a))];
@@ -65,12 +88,19 @@ export async function launchBrowser() {
   });
 }
 
+// Close shared browser
+export async function closeBrowser(): Promise<void> {
+  if (sharedBrowser) {
+    try { await sharedBrowser.close(); } catch {}
+    sharedBrowser = null;
+  }
+}
+
 export async function setupPage(browser: any, cookie: string, region: string = 'ph') {
   const page = await browser.newPage();
 
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-  // Stealth evasion
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });

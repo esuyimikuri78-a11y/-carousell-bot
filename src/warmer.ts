@@ -1,5 +1,5 @@
 import { getAccounts, getState, setState } from './storage';
-import { launchBrowser, setupPage, getDomain } from './browser';
+import { getBrowser, setupPage, getDomain } from './browser';
 
 type NotifyFn = (chatId: number, text: string) => Promise<void>;
 
@@ -108,14 +108,14 @@ function pickWeightedAction(): string {
 }
 
 async function executeWarmAction(cookie: string, region: string, action: string): Promise<{ success: boolean; action: string; error?: string }> {
-  let browser: any;
+  let page: any;
   const timeout = setTimeout(() => {
-    if (browser) try { browser.close(); } catch {}
+    if (page) try { page.close(); } catch {}
   }, 90000);
 
   try {
-    browser = await launchBrowser();
-    const page = await setupPage(browser, cookie, region);
+    const browser = await getBrowser();
+    page = await setupPage(browser, cookie, region);
     const domain = getDomain(region);
     let resultAction = '';
 
@@ -204,6 +204,6 @@ async function executeWarmAction(cookie: string, region: string, action: string)
     return { success: false, action: '', error: e.message };
   } finally {
     clearTimeout(timeout);
-    if (browser) try { await browser.close(); } catch {}
+    if (page) try { await page.close(); } catch {}
   }
 }

@@ -1,5 +1,5 @@
 import { REGIONS, BAN_KEYWORDS } from '../types';
-import { launchBrowser, setupPage, getBaseUrl } from '../browser';
+import { getBrowser, setupPage, getBaseUrl, closeBrowser } from '../browser';
 
 export interface ChatTokenResponse {
   chatToken?: string;
@@ -10,10 +10,10 @@ export interface ChatTokenResponse {
 
 // Fetch SendBird chat token via Puppeteer
 export async function fetchChatToken(cookie: string, region: string = 'ph'): Promise<ChatTokenResponse> {
-  let browser;
+  let page: any;
   try {
-    browser = await launchBrowser();
-    const page = await setupPage(browser, cookie, region);
+    const browser = await getBrowser();
+    page = await setupPage(browser, cookie, region);
     const baseUrl = getBaseUrl(region);
 
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -49,20 +49,20 @@ export async function fetchChatToken(cookie: string, region: string = 'ph'): Pro
   } catch (e: any) {
     return { error: `Browser error: ${e.message}` };
   } finally {
-    if (browser) try { await browser.close(); } catch {}
+    if (page) try { await page.close(); } catch {}
   }
 }
 
 // Send message via Puppeteer
 export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string, message: string, region: string = 'ph'): Promise<{ success: boolean; error?: string }> {
-  let browser: any;
+  let page: any;
   const timeout = setTimeout(() => {
-    if (browser) try { browser.close(); } catch {}
+    if (page) try { page.close(); } catch {}
   }, 120000);
 
   try {
-    browser = await launchBrowser();
-    const page = await setupPage(browser, cookie, region);
+    const browser = await getBrowser();
+    page = await setupPage(browser, cookie, region);
 
     await page.goto(listingUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await new Promise(r => setTimeout(r, 5000));
@@ -168,15 +168,7 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     return { success: false, error: `Browser error: ${e.message}` };
   } finally {
     clearTimeout(timeout);
-    if (browser) {
-      try {
-        const pages = await browser.pages();
-        for (const p of pages) try { await p.close(); } catch {}
-        await browser.close();
-      } catch {
-        try { await browser.close(); } catch {}
-      }
-    }
+    if (page) try { await page.close(); } catch {}
   }
 }
 
