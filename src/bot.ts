@@ -15,7 +15,7 @@ function esc(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-const bot = new TelegramBot(process.env.BOT_TOKEN!, { polling: true });
+export const bot = new TelegramBot(process.env.BOT_TOKEN!, { polling: true });
 const menuMsgId = new Map<number, number>();
 const waitingFor = new Map<number, string>();
 const pendingRegion = new Map<number, string>();
@@ -773,7 +773,7 @@ async function handleDocument(msg: TelegramBot.Message) {
 }
 
 // Notify — sends text AND refreshes menu
-async function notify(chatId: number, text: string) {
+export async function notify(chatId: number, text: string) {
   try { await bot.sendMessage(chatId, text); } catch {}
   try { await showMainMenu(chatId); } catch {}
 }

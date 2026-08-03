@@ -101,7 +101,9 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       }, chatBtnTexts),
     ]);
 
+    // Wait and verify page is still alive
     await new Promise(r => setTimeout(r, 8000));
+    if (page.isClosed()) return { success: false, error: 'Page closed after Chat click' };
 
     // Find textarea
     let input: any = null;
@@ -116,12 +118,20 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
 
     if (!input) return { success: false, error: 'Chat input not found' };
 
+    // Helper: check if page is still alive
+    const isAlive = () => {
+      try { return !page.isClosed(); } catch { return false; }
+    };
+
+    if (!isAlive()) return { success: false, error: 'Page closed before typing' };
+
     await input.click();
     await new Promise(r => setTimeout(r, 500));
 
     // Type multiline message
     const lines = message.split('\n');
     for (let i = 0; i < lines.length; i++) {
+      if (!isAlive()) return { success: false, error: 'Page closed during typing' };
       if (i > 0) {
         await page.keyboard.down('Shift');
         await page.keyboard.press('Enter');
@@ -131,6 +141,8 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
       await page.keyboard.type(lines[i], { delay: 15 });
     }
     await new Promise(r => setTimeout(r, 1000));
+
+    if (!isAlive()) return { success: false, error: 'Page closed before send' };
 
     // Click Send
     let sent = false;
@@ -148,7 +160,7 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
         } catch {}
       }
     } catch {}
-    if (!sent) await page.keyboard.press('Enter');
+    if (!sent && isAlive()) await page.keyboard.press('Enter');
 
     await new Promise(r => setTimeout(r, 3000));
     return { success: true };
