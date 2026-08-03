@@ -9,6 +9,7 @@ export interface CarousellAccount {
   banned: boolean;
   region: string;
   addedAt: number;
+  mode: 'warm' | 'send' | 'both'; // what this account does
 }
 
 export interface BotState {
@@ -29,11 +30,14 @@ export interface BotState {
   warming: boolean;
   warmInterval: number; // minutes between warm actions
   warmNextAt: number;
+  warmDailyLimit: number; // max warm actions per day
+  warmToday: number;
   warmStats: {
     browsed: number;
     liked: number;
     profiles: number;
     searched: number;
+    total: number;
   };
 }
 
@@ -71,5 +75,7 @@ export const DEFAULT_STATE: BotState = {
   warming: false,
   warmInterval: 15,
   warmNextAt: 0,
-  warmStats: { browsed: 0, liked: 0, profiles: 0, searched: 0 },
+  warmDailyLimit: 30,
+  warmToday: 0,
+  warmStats: { browsed: 0, liked: 0, profiles: 0, searched: 0, total: 0 },
 };

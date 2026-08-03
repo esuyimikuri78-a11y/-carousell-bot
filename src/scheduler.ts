@@ -1,6 +1,5 @@
-import { getState, setState, getLinks, getAccounts, getMessage } from './storage';
+import { getState, setState, getLinks, getAccounts, getMessage, removeProcessedLinks, updateAccount } from './storage';
 import { addVariation } from './uniquifier';
-import { BotState } from './types';
 
 type NotifyFn = (chatId: number, text: string) => Promise<void>;
 
@@ -61,7 +60,8 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
 
   // Check accounts
   const accounts = await getAccounts(chatId);
-  const validAccounts = accounts.filter(a => a.valid && !a.banned);
+  // Only use accounts with mode 'send' or 'both'
+  const validAccounts = accounts.filter(a => a.valid && !a.banned && (a.mode === 'send' || a.mode === 'both'));
   if (validAccounts.length === 0) {
     await setState(chatId, { running: false, lastError: 'No valid accounts' });
     await notify(chatId, '❌ Нет валидных аккаунтов.');
@@ -146,7 +146,6 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
   state.retryCount = retries;
 
   // Remove processed links from queue
-  const { removeProcessedLinks } = await import('./storage');
   const remaining = await removeProcessedLinks(chatId, batchSize);
   state.currentIndex = 0; // Reset since we removed processed links
 
@@ -164,7 +163,6 @@ async function tick(chatId: number, notify: NotifyFn): Promise<void> {
 
   // Mark banned accounts
   for (const [id, name] of bannedAccounts) {
-    const { updateAccount } = await import('./storage');
     const allAccounts = await getAccounts(chatId);
     const idx = allAccounts.findIndex(a => a.id === id);
     if (idx !== -1) await updateAccount(chatId, idx, { valid: false, banned: true });

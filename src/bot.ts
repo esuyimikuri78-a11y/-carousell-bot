@@ -7,7 +7,11 @@ import { addVariation } from './uniquifier';
 import crypto from 'crypto';
 
 function esc(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 const bot = new TelegramBot(process.env.BOT_TOKEN!, { polling: true });
@@ -111,6 +115,7 @@ async function showMainMenu(chatId: number) {
     `🔗 Ссылок: <b>${links.length}</b>${state.currentIndex > 0 ? ` (${state.currentIndex})` : ''}`,
     `💬 Сообщение: ${message ? '✅' : '❌'}`,
     `⏱ ${state.interval} мин | 📊 ${state.dailyLimit || '∞'}/день | 🔄 ${state.uniquifier ? '✅' : '❌'}`,
+    state.warming ? `🔥 Прогрев: ${state.warmToday || 0}/${state.warmDailyLimit || '∞'}` : '',
     stats.length ? `\n${stats.join(' | ')}` : '',
     state.lastError ? `\n⚠️ ${esc(state.lastError)}` : '',
   ].filter(Boolean).join('\n');
@@ -119,15 +124,11 @@ async function showMainMenu(chatId: number) {
     ? (state.paused ? [{ text: '▶️ Продолжить', callback_data: 'action_resume' }] : [{ text: '⏸ Пауза', callback_data: 'action_pause' }])
     : [{ text: '▶️ Старт', callback_data: 'action_start' }];
 
-  const warmerBtn = state.warming
-    ? [{ text: '🔥 Прогрев: ВКЛ', callback_data: 'warmer_toggle' }]
-    : [{ text: '❄️ Прогрев: ВЫКЛ', callback_data: 'warmer_toggle' }];
-
   const rows: TelegramBot.InlineKeyboardButton[][] = [
     startBtn,
     [{ text: '👤 Аккаунты', callback_data: 'menu_accounts' }, { text: '🔗 Ссылки', callback_data: 'menu_links' }],
-    [{ text: '💬 Сообщение', callback_data: 'menu_message' }, { text: '⚙️ Настройки', callback_data: 'menu_settings' }],
-    warmerBtn,
+    [{ text: '💬 Сообщение', callback_data: 'menu_message' }, { text: '🔥 Прогрев', callback_data: 'menu_warmer' }],
+    [{ text: '⚙️ Настройки', callback_data: 'menu_settings' }],
   ];
   if (state.running) rows.push([{ text: '⏹ Стоп', callback_data: 'action_stop' }]);
   rows.push([{ text: `🌍 Сменить регион`, callback_data: 'change_geo' }]);
@@ -159,7 +160,20 @@ async function handleCallback(query: TelegramBot.CallbackQuery) {
   if (data === 'change_geo') return showGeoPicker(chatId);
 
   // Warmer
+  // Warmer
+  if (data === 'menu_warmer') return showWarmerMenu(chatId);
   if (data === 'warmer_toggle') return handleWarmerToggle(chatId);
+  if (data === 'warmer_set_interval') return handleWarmerSetInterval(chatId);
+  if (data.startsWith('warmer_interval_')) {
+    const mins = parseInt(data.split('_')[2]);
+    await storage.setState(chatId, { warmInterval: mins });
+    await showWarmerMenu(chatId);
+    return;
+  }
+  if (data.startsWith('toggle_mode_')) {
+    const index = parseInt(data.split('_')[2]);
+    return handleToggleMode(chatId, index);
+  }
 
   // Actions
   if (data === 'action_start') return handleStartSending(chatId, query);
@@ -369,15 +383,12 @@ async function showLinksMenu(chatId: number) {
 
 async function handleListLinks(chatId: number) {
   const links = await storage.getLinks(chatId);
-  const state = await storage.getState(chatId);
   if (links.length === 0) return;
 
-  const list = links.slice(0, 30).map((l, i) => {
-    const icon = i < state.currentIndex ? '✅' : '⬜';
-    return `${icon} ${i + 1}. ${l}`;
-  }).join('\n');
+  const list = links.slice(0, 30).map((l, i) => `${i + 1}. ${l}`).join('\n');
+  const extra = links.length > 30 ? `\n\n...и ещё ${links.length - 30}` : '';
 
-  await editOrSend(chatId, `📋 <b>Ссылки</b>\n\n${list}${links.length > 30 ? `\n\n...и ещё ${links.length - 30}` : ''}`, {
+  await editOrSend(chatId, `📋 <b>Ссылки</b>\n\n${list}${extra}`, {
     inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'menu_links' }]],
   });
 }
@@ -484,6 +495,84 @@ async function handleResumeSending(chatId: number) {
   await showMainMenu(chatId);
 }
 
+// Warmer menu
+async function showWarmerMenu(chatId: number) {
+  const state = await storage.getState(chatId);
+  const accounts = await storage.getAccounts(chatId);
+  const { REGIONS } = await import('./types');
+
+  const warmAccounts = accounts.filter(a => a.mode === 'warm' || a.mode === 'both');
+  const sendAccounts = accounts.filter(a => a.mode === 'send' || a.mode === 'both');
+
+  const ws = state.warmStats;
+
+  const text = [
+    '🔥 <b>Прогрев аккаунтов</b>',
+    '━━━━━━━━━━━━━━━━━━',
+    `Статус: ${state.warming ? '🟢 Работает' : '⚪ Выключен'}`,
+    `Интервал: ${state.warmInterval} мин`,
+    `Лимит: ${state.warmToday || 0}/${state.warmDailyLimit || '∞'} в день`,
+    '',
+    `Аккаунтов на прогреве: <b>${warmAccounts.length}</b>`,
+    `Аккаунтов на отписке: <b>${sendAccounts.length}</b>`,
+    '',
+    '📊 <b>Статистика:</b>',
+    `  Просмотров: ${ws.browsed}`,
+    `  Лайков: ${ws.liked}`,
+    `  Профилей: ${ws.profiles}`,
+    `  Поисков: ${ws.searched}`,
+    `  Всего: ${ws.total}`,
+  ].join('\n');
+
+  const toggleBtn = state.warming
+    ? [{ text: '⏹ Остановить', callback_data: 'warmer_toggle' }]
+    : [{ text: '▶️ Запустить', callback_data: 'warmer_toggle' }];
+
+  const rows: TelegramBot.InlineKeyboardButton[][] = [
+    toggleBtn,
+    [{ text: '⏱ Интервал:', callback_data: 'noop' }],
+    [
+      { text: `${state.warmInterval === 10 ? '▹' : ''}10`, callback_data: 'warmer_interval_10' },
+      { text: `${state.warmInterval === 15 ? '▹' : ''}15`, callback_data: 'warmer_interval_15' },
+      { text: `${state.warmInterval === 30 ? '▹' : ''}30`, callback_data: 'warmer_interval_30' },
+      { text: `${state.warmInterval === 60 ? '▹' : ''}60`, callback_data: 'warmer_interval_60' },
+    ],
+  ];
+
+  // Show accounts with mode toggle
+  if (accounts.length > 0) {
+    rows.push([{ text: '👤 Режим аккаунтов:', callback_data: 'noop' }]);
+    accounts.forEach((acc, i) => {
+      const r = REGIONS[acc.region] || REGIONS.ph;
+      const name = acc.username || `#${i + 1}`;
+      const modeIcon = acc.mode === 'warm' ? '🔥' : acc.mode === 'send' ? '📨' : '🔥📨';
+      rows.push([{
+        text: `${r.flag} ${name} ${modeIcon}`,
+        callback_data: `toggle_mode_${i}`,
+      }]);
+    });
+  }
+
+  rows.push([{ text: '◀️ Назад', callback_data: 'menu_main' }]);
+
+  await editOrSend(chatId, text, { inline_keyboard: rows });
+}
+
+// Toggle account mode (warm → send → both → warm)
+async function handleToggleMode(chatId: number, index: number) {
+  const accounts = await storage.getAccounts(chatId);
+  if (index >= accounts.length) return;
+
+  const current = accounts[index].mode || 'send';
+  let next: 'warm' | 'send' | 'both';
+  if (current === 'send') next = 'warm';
+  else if (current === 'warm') next = 'both';
+  else next = 'send';
+
+  await storage.updateAccount(chatId, index, { mode: next });
+  await showWarmerMenu(chatId);
+}
+
 // Warmer toggle
 async function handleWarmerToggle(chatId: number) {
   const state = await storage.getState(chatId);
@@ -496,7 +585,11 @@ async function handleWarmerToggle(chatId: number) {
     await storage.setState(chatId, { warming: true });
     startWarmer(chatId, notify);
   }
-  await showMainMenu(chatId);
+  await showWarmerMenu(chatId);
+}
+
+async function handleWarmerSetInterval(chatId: number) {
+  await showWarmerMenu(chatId);
 }
 
 // ==================== MESSAGE HANDLER ====================
@@ -547,7 +640,7 @@ async function handleMessage(msg: TelegramBot.Message) {
     await storage.addAccount(chatId, {
       id: crypto.randomUUID(), type: 'cookie', cookie,
       username: validation.username, valid: validation.valid,
-      banned: false, region, addedAt: Date.now(),
+      banned: false, region, addedAt: Date.now(), mode: 'send',
     });
     await showAccountsMenu(chatId);
     return;
@@ -568,7 +661,7 @@ async function handleMessage(msg: TelegramBot.Message) {
 
     await storage.addAccount(chatId, {
       id: crypto.randomUUID(), type: 'credentials', login, password: msg.text.trim(),
-      valid: false, banned: false, region, addedAt: Date.now(),
+      valid: false, banned: false, region, addedAt: Date.now(), mode: 'send',
     });
     await bot.sendMessage(chatId, '⚠️ Добавлен. Для работы нужно cookie.');
     await showAccountsMenu(chatId);
@@ -635,7 +728,7 @@ async function handleDocument(msg: TelegramBot.Message) {
       await storage.addAccount(chatId, {
         id: crypto.randomUUID(), type: 'cookie', cookie,
         username: validation.username, valid: validation.valid,
-        banned: false, region, addedAt: Date.now(),
+        banned: false, region, addedAt: Date.now(), mode: 'send',
       });
       await showAccountsMenu(chatId);
     } catch (e: any) {
@@ -665,8 +758,9 @@ async function handleDocument(msg: TelegramBot.Message) {
   }
 }
 
-// Notify
+// Notify — sends text AND refreshes menu
 async function notify(chatId: number, text: string) {
+  try { await bot.sendMessage(chatId, text); } catch {}
   try { await showMainMenu(chatId); } catch {}
 }
 
