@@ -71,6 +71,15 @@ export async function sendMessageViaPuppeteer(cookie: string, listingUrl: string
     const pageContent = await page.evaluate(() => document.body?.innerText || '');
     if (isBanned(pageContent)) return { success: false, error: 'ACCOUNT_BANNED' };
 
+    // Like the listing (makes account look more natural)
+    try {
+      await page.evaluate(() => {
+        const likeBtn = document.querySelector('button[class*="like"], button[class*="heart"], button[aria-label*="like" i], button[aria-label*="favourite" i], button[class*="D_aJl"]');
+        if (likeBtn) (likeBtn as HTMLElement).click();
+      });
+      await new Promise(r => setTimeout(r, 500));
+    } catch {}
+
     // Find and click Chat button
     const clicked = await page.evaluate(() => {
       const btn = document.querySelector('button.D_rW.D_sh.D_bHw.D_se.D_sb')
